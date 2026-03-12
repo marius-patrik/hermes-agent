@@ -73,7 +73,7 @@ def ensure_hermes_home():
     home = get_hermes_home()
     home.mkdir(parents=True, exist_ok=True)
     _secure_dir(home)
-    for subdir in ("cron", "sessions", "logs", "memories"):
+    for subdir in ("cron", "sessions", "logs", "memories", "fleet"):
         d = home / subdir
         d.mkdir(parents=True, exist_ok=True)
         _secure_dir(d)
@@ -239,6 +239,14 @@ DEFAULT_CONFIG = {
     "discord": {
         "require_mention": True,       # Require @mention to respond in server channels
         "free_response_channels": "",  # Comma-separated channel IDs where bot responds without mention
+    },
+
+    # Fleet / orchestration control plane configuration
+    "fleet": {
+        "enabled": True,
+        "default_command": "fleet",
+        "machines": [],
+        "model_profiles": {},
     },
 
     # Permanently allowed dangerous command patterns (added via "always" approval)

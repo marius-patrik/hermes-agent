@@ -1360,6 +1360,11 @@ def _model_flow_named_custom(config, provider_info):
 
 # Curated model lists for direct API-key providers
 _PROVIDER_MODELS = {
+    "anthropic": [
+        "claude-opus-4-6",
+        "claude-sonnet-4-6",
+        "claude-haiku-4-5",
+    ],
     "zai": [
         "glm-5",
         "glm-4.7",
@@ -1811,6 +1816,12 @@ def cmd_doctor(args):
     """Check configuration and dependencies."""
     from hermes_cli.doctor import run_doctor
     run_doctor(args)
+
+
+def cmd_fleet(args):
+    """Fleet / orchestrator control plane."""
+    from hermes_cli.fleet import fleet_command
+    fleet_command(args)
 
 
 def cmd_config(args):
@@ -2532,6 +2543,55 @@ For more help on a command:
         help="Attempt to fix issues automatically"
     )
     doctor_parser.set_defaults(func=cmd_doctor)
+    
+    # =========================================================================
+    # fleet command
+    # =========================================================================
+    fleet_parser = subparsers.add_parser(
+        "fleet",
+        help="Fleet / orchestrator control plane",
+        description="Manage Hermes agents, model profiles, and orchestration"
+    )
+    fleet_subparsers = fleet_parser.add_subparsers(dest="fleet_command")
+
+    fleet_ps = fleet_subparsers.add_parser("ps", help="List active fleet agents")
+    fleet_ps.set_defaults(func=cmd_fleet, command="fleet")
+
+    fleet_doctor = fleet_subparsers.add_parser("doctor", help="Check fleet registry and health")
+    fleet_doctor.set_defaults(func=cmd_fleet, command="fleet")
+
+    fleet_models = fleet_subparsers.add_parser("models", help="List configured fleet model profiles")
+    fleet_models.set_defaults(func=cmd_fleet, command="fleet")
+
+    fleet_spawn = fleet_subparsers.add_parser("spawn", help="Spawn a managed fleet agent")
+    fleet_spawn.add_argument("--name", help="Human-friendly agent name")
+    fleet_spawn.add_argument("--role", default="worker", help="Agent role (worker, planner, reviewer, etc.)")
+    fleet_spawn.add_argument("--profile", default="", help="Fleet model profile name")
+    fleet_spawn.add_argument("--machine", default="local", help="Target machine id")
+    fleet_spawn.add_argument("--cwd", help="Working directory for the agent")
+    fleet_spawn.add_argument("--command", help="Override startup command")
+    fleet_spawn.set_defaults(func=cmd_fleet, command="fleet")
+
+    fleet_logs = fleet_subparsers.add_parser("logs", help="Show recent tmux pane output for an agent")
+    fleet_logs.add_argument("agent_id", help="Fleet agent id")
+    fleet_logs.add_argument("--lines", type=int, default=200, help="Number of lines to capture")
+    fleet_logs.set_defaults(func=cmd_fleet, command="fleet")
+
+    fleet_stop = fleet_subparsers.add_parser("stop", help="Stop a managed fleet agent")
+    fleet_stop.add_argument("agent_id", help="Fleet agent id")
+    fleet_stop.set_defaults(func=cmd_fleet, command="fleet")
+
+    fleet_attach = fleet_subparsers.add_parser("attach", help="Attach to a managed fleet tmux session")
+    fleet_attach.add_argument("agent_id", help="Fleet agent id")
+    fleet_attach.set_defaults(func=cmd_fleet, command="fleet")
+
+    fleet_orch = fleet_subparsers.add_parser("orch", help="Manage orchestrator agent")
+    fleet_orch.set_defaults(func=cmd_fleet, command="fleet")
+    fleet_ollama = fleet_subparsers.add_parser("ollama", help="Manage Ollama deployments")
+    fleet_ollama_sub = fleet_ollama.add_subparsers(dest="ollama_command")
+    fleet_ollama_status = fleet_ollama_sub.add_parser("status", help="Show local Ollama status")
+    fleet_ollama_status.set_defaults(func=cmd_fleet, command="fleet", fleet_command="ollama")
+    fleet_parser.set_defaults(func=cmd_fleet, command="fleet")
     
     # =========================================================================
     # config command
