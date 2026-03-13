@@ -7,7 +7,11 @@ from typing import Any
 
 from hermes_cli.config import load_config
 from hermes_cli.fleet_launcher import FleetLauncher
-from hermes_cli.fleet_models import list_model_profiles
+from hermes_cli.fleet_models import (
+    check_profile_health,
+    list_model_profiles,
+    resolve_profile_runtime,
+)
 from hermes_cli.fleet_ollama import get_ollama_status
 from hermes_cli.fleet_registry import FleetRegistry
 
@@ -34,26 +38,85 @@ def _cmd_ps(_args: Namespace) -> None:
 
 
 def _cmd_doctor(_args: Namespace) -> None:
+    config = load_config()
     registry = FleetRegistry()
     summary = registry.get_summary()
+
     print("Hermes Fleet Doctor")
     print(f"  Machines: {summary['total_machines']}")
     print(f"  Agents:   {summary['total_agents']}")
     for status, count in sorted(summary["by_status"].items()):
         print(f"  {status}: {count}")
 
+    # Profile health checks
+    profiles = list_model_profiles(config)
+    if profiles:
+        print()
+        print("Model Profiles:")
+        for profile in profiles:
+            name = profile["name"]
+            health = check_profile_health(config, name)
+            status_str = "healthy" if health["healthy"] else "unhealthy"
+            indicator = "✓" if health["healthy"] else "✗"
+            provider = profile.get("provider", "?")
+            model = profile.get("model", "?")
+            line = f"  {indicator} {name}: {provider}:{model} [{status_str}]"
+            if health.get("error"):
+                line += f" — {health['error']}"
+            if health.get("note"):
+                line += f" ({health['note']})"
+            print(line)
 
-def _cmd_models(_args: Namespace) -> None:
+
+def _cmd_models(args: Namespace) -> None:
     config = load_config()
     profiles = list_model_profiles(config)
     if not profiles:
         print("No fleet model profiles configured.")
+        print()
+        print("Add profiles to ~/.hermes/config.yaml under fleet.model_profiles:")
+        print()
+        print("  fleet:")
+        print("    model_profiles:")
+        print("      local-mac-qwen:")
+        print("        provider: custom")
+        print("        base_url: http://127.0.0.1:11434/v1")
+        print("        api_key: ollama")
+        print("        model: qwen3:8b")
         return
+
+    verbose = getattr(args, "verbose", False)
+
     print("Fleet model profiles:")
+    print()
     for profile in profiles:
+        name = profile["name"]
         provider = profile.get("provider", "")
         model = profile.get("model", "")
-        print(f"  - {profile['name']}: {provider}:{model}")
+        base_url = profile.get("base_url", "")
+        machine = profile.get("machine", "")
+        tags = profile.get("tags", [])
+
+        print(f"  {name}")
+        print(f"    provider: {provider}")
+        print(f"    model:    {model}")
+        if base_url:
+            print(f"    base_url: {base_url}")
+        if machine:
+            print(f"    machine:  {machine}")
+        if tags:
+            print(f"    tags:     {', '.join(str(t) for t in tags)}")
+
+        if verbose:
+            health = check_profile_health(config, name)
+            status = "healthy" if health["healthy"] else "unhealthy"
+            print(f"    health:   {status}")
+            if health.get("models"):
+                print(f"    endpoint models: {', '.join(health['models'])}")
+            if health.get("error"):
+                print(f"    error:    {health['error']}")
+
+        print()
 
 
 def _cmd_spawn(args: Namespace) -> None:
@@ -67,6 +130,12 @@ def _cmd_spawn(args: Namespace) -> None:
         command=getattr(args, "command", None),
     )
     print(f"Spawned fleet agent {agent['agent_id']} in tmux session {agent['session_name']}")
+    if agent.get("provider"):
+        print(f"  Provider: {agent['provider']}")
+    if agent.get("model"):
+        print(f"  Model:    {agent['model']}")
+    if agent.get("endpoint_profile"):
+        print(f"  Profile:  {agent['endpoint_profile']}")
 
 
 

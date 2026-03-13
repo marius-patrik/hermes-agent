@@ -10,7 +10,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from hermes_cli.config import get_project_root
+from hermes_cli.config import get_project_root, load_config
+from hermes_cli.fleet_models import profile_to_env, resolve_profile_runtime
 from hermes_cli.fleet_registry import FleetRegistry
 
 
@@ -27,6 +28,15 @@ class FleetLauncher:
         python_bin = Path(sys.executable)
         return f"cd {shlex.quote(str(target_cwd))} && exec {shlex.quote(str(python_bin))} -m hermes_cli.main"
 
+    def _build_env_prefix(self, env_vars: dict[str, str]) -> str:
+        """Build an env var export prefix for the tmux command."""
+        if not env_vars:
+            return ""
+        exports = " ".join(
+            f"{k}={shlex.quote(v)}" for k, v in sorted(env_vars.items())
+        )
+        return f"export {exports} && "
+
     def spawn_agent(
         self,
         *,
@@ -41,7 +51,31 @@ class FleetLauncher:
         base_name = (name or role or "agent").strip() or "agent"
         session_slug = "".join(ch.lower() if ch.isalnum() else "-" for ch in base_name).strip("-") or "agent"
         session_name = f"hermes-{session_slug}-{agent_id[-4:]}"
-        startup_command = command or self._default_command(cwd)
+
+        # Resolve profile to env vars and runtime info
+        config = load_config()
+        env_vars: dict[str, str] = {}
+        resolved_provider = ""
+        resolved_model = ""
+
+        if profile:
+            profile_env = profile_to_env(config, profile)
+            if profile_env is None:
+                raise ValueError(
+                    f"Fleet model profile '{profile}' not found in config.yaml. "
+                    f"Add it under fleet.model_profiles.{profile}"
+                )
+            env_vars.update(profile_env)
+
+            runtime = resolve_profile_runtime(config, profile)
+            if runtime:
+                resolved_provider = runtime.get("provider", "")
+                resolved_model = runtime.get("model", "")
+
+        # Build the startup command with env vars injected
+        base_command = command or self._default_command(cwd)
+        env_prefix = self._build_env_prefix(env_vars)
+        startup_command = f"{env_prefix}{base_command}"
 
         self.registry.upsert_machine(
             machine_id=machine_id,
@@ -60,8 +94,8 @@ class FleetLauncher:
             "name": base_name,
             "role": role,
             "status": "idle",
-            "provider": "",
-            "model": "",
+            "provider": resolved_provider,
+            "model": resolved_model,
             "endpoint_profile": profile,
             "task_summary": f"Managed agent session ({role})",
             "session_name": session_name,

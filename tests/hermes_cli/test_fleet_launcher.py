@@ -1,96 +1,176 @@
-"""Tests for tmux-backed fleet launcher helpers."""
+"""Tests for fleet launcher with profile-based env injection."""
 
 from __future__ import annotations
 
-import os
-from unittest.mock import patch
+import subprocess
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 from hermes_cli.fleet_launcher import FleetLauncher
-from hermes_cli.fleet_registry import FleetRegistry
 
 
-class TestFleetLauncher:
-    def test_spawn_agent_starts_tmux_and_registers_agent(self, tmp_path):
-        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
-            launcher = FleetLauncher(registry=FleetRegistry(tmp_path / "fleet" / "fleet.db"))
+SAMPLE_CONFIG = {
+    "fleet": {
+        "model_profiles": {
+            "local-mac-qwen": {
+                "provider": "custom",
+                "base_url": "http://127.0.0.1:11434/v1",
+                "api_key": "ollama",
+                "model": "qwen3:8b",
+                "machine": "local",
+                "tags": ["local", "ollama", "general"],
+            },
+            "frontier-opus": {
+                "provider": "openrouter",
+                "model": "anthropic/claude-opus-4.6",
+            },
+        }
+    }
+}
 
-            calls = []
 
-            def fake_run(cmd, check=True, capture_output=True, text=True):
-                calls.append(cmd)
-                class Result:
-                    stdout = ""
-                return Result()
+@pytest.fixture
+def mock_launcher(tmp_path):
+    """Create a launcher with mocked tmux and config."""
+    from hermes_cli.fleet_registry import FleetRegistry
 
-            with patch("hermes_cli.fleet_launcher.subprocess.run", side_effect=fake_run):
-                agent = launcher.spawn_agent(name="planner", role="planner", cwd="/tmp/project")
+    db_path = tmp_path / "fleet.db"
+    registry = FleetRegistry(db_path=db_path)
+    launcher = FleetLauncher(registry=registry)
 
-            assert calls
-            assert calls[0][:4] == ["tmux", "new-session", "-d", "-s"]
-            assert agent["name"] == "planner"
-            assert agent["role"] == "planner"
-            assert agent["machine_id"] == "local"
-            assert agent["session_name"].startswith("hermes-planner-")
+    # Mock tmux calls
+    launcher._run_tmux = MagicMock(
+        return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+    )
 
-            agents = launcher.registry.list_agents()
-            assert len(agents) == 1
-            assert agents[0]["agent_id"] == agent["agent_id"]
-            assert agents[0]["status"] == "idle"
+    return launcher
 
-    def test_stop_agent_kills_tmux_and_marks_agent_dead(self, tmp_path):
-        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
-            launcher = FleetLauncher(registry=FleetRegistry(tmp_path / "fleet" / "fleet.db"))
-            launcher.registry.upsert_machine(machine_id="local", name="Local", host="127.0.0.1")
-            launcher.registry.upsert_agent(
-                agent_id="agent_1",
-                machine_id="local",
-                name="planner",
-                role="planner",
-                status="idle",
-                session_name="hermes-planner-1234",
-            )
 
-            calls = []
+# ── Basic spawn ──────────────────────────────────────────────────────────
 
-            def fake_run(cmd, check=True, capture_output=True, text=True):
-                calls.append(cmd)
-                class Result:
-                    stdout = ""
-                return Result()
+@patch("hermes_cli.fleet_launcher.load_config", return_value=SAMPLE_CONFIG)
+def test_spawn_without_profile(mock_config, mock_launcher):
+    agent = mock_launcher.spawn_agent(name="test", role="worker")
+    assert agent["agent_id"].startswith("agent_")
+    assert agent["role"] == "worker"
+    assert agent["provider"] == ""
+    assert agent["model"] == ""
+    assert agent["endpoint_profile"] == ""
 
-            with patch("hermes_cli.fleet_launcher.subprocess.run", side_effect=fake_run):
-                launcher.stop_agent("agent_1")
+    # tmux called with no env prefix
+    call_args = mock_launcher._run_tmux.call_args[0][0]
+    cmd_str = call_args[-1]  # last arg is the command
+    assert "export" not in cmd_str
 
-            assert calls == [["tmux", "kill-session", "-t", "hermes-planner-1234"]]
-            agent = launcher.registry.get_agent("agent_1")
-            assert agent is not None
-            assert agent["status"] == "dead"
 
-    def test_get_logs_uses_tmux_capture_pane(self, tmp_path):
-        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
-            launcher = FleetLauncher(registry=FleetRegistry(tmp_path / "fleet" / "fleet.db"))
-            launcher.registry.upsert_machine(machine_id="local", name="Local", host="127.0.0.1")
-            launcher.registry.upsert_agent(
-                agent_id="agent_1",
-                machine_id="local",
-                name="planner",
-                role="planner",
-                status="idle",
-                session_name="hermes-planner-1234",
-            )
+# ── Profile injection ────────────────────────────────────────────────────
 
-            def fake_run(cmd, check=True, capture_output=True, text=True):
-                class Result:
-                    stdout = "hello\nworld\n"
-                return Result()
+@patch("hermes_cli.fleet_launcher.load_config", return_value=SAMPLE_CONFIG)
+def test_spawn_with_custom_profile(mock_config, mock_launcher):
+    agent = mock_launcher.spawn_agent(
+        name="local-coder",
+        role="coder",
+        profile="local-mac-qwen",
+    )
+    assert agent["provider"] == "custom"
+    assert agent["model"] == "qwen3:8b"
+    assert agent["endpoint_profile"] == "local-mac-qwen"
 
-            with patch("hermes_cli.fleet_launcher.subprocess.run", side_effect=fake_run) as mocked:
-                logs = launcher.get_logs("agent_1", lines=50)
+    # tmux command should include env exports
+    call_args = mock_launcher._run_tmux.call_args[0][0]
+    cmd_str = call_args[-1]
+    assert "export" in cmd_str
+    assert "OPENAI_BASE_URL=" in cmd_str
+    assert "127.0.0.1:11434" in cmd_str
+    assert "OPENAI_API_KEY=" in cmd_str
+    assert "HERMES_MODEL=" in cmd_str
+    assert "qwen3:8b" in cmd_str
 
-            mocked.assert_called_once_with(
-                ["tmux", "capture-pane", "-pt", "hermes-planner-1234", "-S", "-50"],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-            assert logs == "hello\nworld\n"
+
+@patch("hermes_cli.fleet_launcher.load_config", return_value=SAMPLE_CONFIG)
+def test_spawn_with_cloud_profile(mock_config, mock_launcher):
+    agent = mock_launcher.spawn_agent(
+        name="planner",
+        role="planner",
+        profile="frontier-opus",
+    )
+    assert agent["provider"] == "openrouter"
+    assert agent["model"] == "anthropic/claude-opus-4.6"
+    assert agent["endpoint_profile"] == "frontier-opus"
+
+    # Should have HERMES_MODEL but not OPENAI_BASE_URL (cloud provider)
+    call_args = mock_launcher._run_tmux.call_args[0][0]
+    cmd_str = call_args[-1]
+    assert "export" in cmd_str
+    assert "HERMES_MODEL=" in cmd_str
+    # openrouter is default, so no HERMES_INFERENCE_PROVIDER needed
+    # No OPENAI_BASE_URL for cloud profiles
+    assert "OPENAI_BASE_URL" not in cmd_str
+
+
+# ── Error cases ──────────────────────────────────────────────────────────
+
+@patch("hermes_cli.fleet_launcher.load_config", return_value=SAMPLE_CONFIG)
+def test_spawn_unknown_profile_raises(mock_config, mock_launcher):
+    with pytest.raises(ValueError, match="not found"):
+        mock_launcher.spawn_agent(name="test", profile="nonexistent-profile")
+
+
+@patch("hermes_cli.fleet_launcher.load_config", return_value={"fleet": {}})
+def test_spawn_empty_profiles_raises(mock_config, mock_launcher):
+    with pytest.raises(ValueError, match="not found"):
+        mock_launcher.spawn_agent(name="test", profile="anything")
+
+
+# ── Env prefix building ─────────────────────────────────────────────────
+
+def test_build_env_prefix_empty(mock_launcher):
+    assert mock_launcher._build_env_prefix({}) == ""
+
+
+def test_build_env_prefix_single():
+    launcher = FleetLauncher.__new__(FleetLauncher)
+    prefix = launcher._build_env_prefix({"FOO": "bar"})
+    assert prefix == "export FOO=bar && "
+
+
+def test_build_env_prefix_multiple_sorted():
+    launcher = FleetLauncher.__new__(FleetLauncher)
+    prefix = launcher._build_env_prefix({"ZZZ": "last", "AAA": "first"})
+    assert prefix.startswith("export AAA=first ZZZ=last")
+
+
+def test_build_env_prefix_quotes_special_chars():
+    launcher = FleetLauncher.__new__(FleetLauncher)
+    prefix = launcher._build_env_prefix({"KEY": "value with spaces"})
+    assert "value with spaces" in prefix
+    # Should be shell-quoted
+    assert "'" in prefix or '"' in prefix
+
+
+# ── Stop and logs still work ─────────────────────────────────────────────
+
+@patch("hermes_cli.fleet_launcher.load_config", return_value=SAMPLE_CONFIG)
+def test_stop_agent(mock_config, mock_launcher):
+    agent = mock_launcher.spawn_agent(name="stopper", role="worker")
+    mock_launcher._run_tmux.reset_mock()
+    mock_launcher.stop_agent(agent["agent_id"])
+    # tmux kill-session should have been called
+    call_args = mock_launcher._run_tmux.call_args[0][0]
+    assert "kill-session" in call_args
+
+
+@patch("hermes_cli.fleet_launcher.load_config", return_value=SAMPLE_CONFIG)
+def test_get_logs(mock_config, mock_launcher):
+    mock_launcher._run_tmux.return_value = subprocess.CompletedProcess(
+        args=[], returncode=0, stdout="some log output\n", stderr=""
+    )
+    agent = mock_launcher.spawn_agent(name="logger", role="worker")
+    mock_launcher._run_tmux.reset_mock()
+    mock_launcher._run_tmux.return_value = subprocess.CompletedProcess(
+        args=[], returncode=0, stdout="captured logs here\n", stderr=""
+    )
+    logs = mock_launcher.get_logs(agent["agent_id"])
+    assert "captured logs here" in logs

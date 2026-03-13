@@ -2561,6 +2561,7 @@ For more help on a command:
     fleet_doctor.set_defaults(func=cmd_fleet, command="fleet")
 
     fleet_models = fleet_subparsers.add_parser("models", help="List configured fleet model profiles")
+    fleet_models.add_argument("-v", "--verbose", action="store_true", help="Include health check for each profile")
     fleet_models.set_defaults(func=cmd_fleet, command="fleet")
 
     fleet_spawn = fleet_subparsers.add_parser("spawn", help="Spawn a managed fleet agent")
