@@ -79,3 +79,32 @@ class TestFleetRegistry:
         assert summary["by_status"]["idle"] == 1
         assert summary["by_status"]["busy"] == 1
         assert summary["by_status"]["blocked"] == 1
+
+    def test_enqueue_assignment_and_list(self, tmp_path):
+        registry = FleetRegistry(tmp_path / "fleet.db")
+        assignment = registry.enqueue_assignment(
+            task_summary="Implement the worker loop",
+            requested_role="coder",
+            requested_profile="local-mac-qwen",
+            source="user",
+        )
+
+        assignments = registry.list_assignments()
+        assert len(assignments) == 1
+        assert assignments[0]["assignment_id"] == assignment["assignment_id"]
+        assert assignments[0]["task_summary"] == "Implement the worker loop"
+        assert assignments[0]["requested_role"] == "coder"
+        assert assignments[0]["requested_profile"] == "local-mac-qwen"
+        assert assignments[0]["status"] == "queued"
+        assert assignments[0]["source"] == "user"
+
+    def test_summary_counts_assignments_by_status(self, tmp_path):
+        registry = FleetRegistry(tmp_path / "fleet.db")
+        queued = registry.enqueue_assignment(task_summary="Task 1")
+        second = registry.enqueue_assignment(task_summary="Task 2")
+        registry.update_assignment(second["assignment_id"], status="running")
+
+        summary = registry.get_summary()
+        assert summary["total_assignments"] == 2
+        assert summary["assignments_by_status"]["queued"] == 1
+        assert summary["assignments_by_status"]["running"] == 1

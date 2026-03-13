@@ -139,6 +139,21 @@ def _cmd_spawn(args: Namespace) -> None:
 
 
 
+def _cmd_delegate(args: Namespace) -> None:
+    registry = FleetRegistry()
+    assignment = registry.enqueue_assignment(
+        task_summary=getattr(args, "task", ""),
+        requested_role=getattr(args, "role", "worker"),
+        requested_profile=getattr(args, "profile", ""),
+        source="user",
+    )
+    print(f"Queued assignment {assignment['assignment_id']}")
+    print(f"  Role:    {assignment.get('requested_role', '-')}")
+    print(f"  Profile: {assignment.get('requested_profile', '-') or '-'}")
+    print(f"  Task:    {assignment.get('task_summary', '')}")
+
+
+
 def _cmd_logs(args: Namespace) -> None:
     launcher = FleetLauncher()
     logs = launcher.get_logs(args.agent_id, lines=getattr(args, "lines", 200))
@@ -157,6 +172,61 @@ def _cmd_attach(args: Namespace) -> None:
     launcher = FleetLauncher()
     launcher.attach_agent(args.agent_id)
 
+
+
+def _get_orchestrator_agent(registry: FleetRegistry) -> dict[str, Any] | None:
+    agents = registry.list_agents()
+    for agent in agents:
+        if agent.get("role") == "orchestrator" and agent.get("status") != "dead":
+            return agent
+    return None
+
+
+def _cmd_orch(args: Namespace) -> None:
+    orch_command = getattr(args, "orch_command", None) or "status"
+    registry = FleetRegistry()
+
+    if orch_command == "status":
+        agent = _get_orchestrator_agent(registry)
+        if not agent:
+            print("Orchestrator: not running")
+            return
+        print("Orchestrator: running")
+        print(f"  Agent ID: {agent.get('agent_id', '-')}")
+        print(f"  Status:   {agent.get('status', '-')}")
+        print(f"  Machine:  {agent.get('machine_id', '-')}")
+        print(f"  Profile:  {agent.get('endpoint_profile', '-') or '-'}")
+        print(f"  Session:  {agent.get('session_name', '-')}")
+        return
+
+    if orch_command == "start":
+        existing = _get_orchestrator_agent(registry)
+        if existing:
+            print(f"Orchestrator already running: {existing.get('agent_id', '-')}")
+            return
+        launcher = FleetLauncher()
+        agent = launcher.spawn_agent(
+            name=getattr(args, "name", None) or "orchestrator",
+            role="orchestrator",
+            profile=getattr(args, "profile", ""),
+            machine_id=getattr(args, "machine", "local"),
+            cwd=getattr(args, "cwd", None),
+            command=getattr(args, "command", None),
+        )
+        print(f"Started orchestrator {agent['agent_id']} in tmux session {agent['session_name']}")
+        return
+
+    if orch_command == "stop":
+        agent = _get_orchestrator_agent(registry)
+        if not agent:
+            print("Orchestrator: not running")
+            return
+        launcher = FleetLauncher()
+        launcher.stop_agent(agent["agent_id"])
+        print(f"Stopped orchestrator {agent['agent_id']}")
+        return
+
+    print(f"Fleet orchestrator subcommand '{orch_command}' is planned but not implemented yet.")
 
 
 def _cmd_ollama(args: Namespace) -> None:
@@ -193,6 +263,9 @@ def fleet_command(args: Namespace) -> None:
     if command == "spawn":
         _cmd_spawn(args)
         return
+    if command == "delegate":
+        _cmd_delegate(args)
+        return
     if command == "logs":
         _cmd_logs(args)
         return
@@ -201,6 +274,9 @@ def fleet_command(args: Namespace) -> None:
         return
     if command == "attach":
         _cmd_attach(args)
+        return
+    if command == "orch":
+        _cmd_orch(args)
         return
     if command == "ollama":
         _cmd_ollama(args)

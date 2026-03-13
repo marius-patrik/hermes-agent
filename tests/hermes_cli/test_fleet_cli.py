@@ -77,6 +77,24 @@ class TestFleetCliWiring:
             "ollama_command": "status",
         }
 
+    def test_main_dispatches_nested_fleet_orch_status_subcommand(self):
+        called = {}
+
+        def fake_fleet_command(args):
+            called["command"] = args.command
+            called["fleet_command"] = args.fleet_command
+            called["orch_command"] = getattr(args, "orch_command", None)
+
+        argv = ["hermes", "fleet", "orch", "status"]
+        with patch.object(sys, "argv", argv), patch("hermes_cli.fleet.fleet_command", side_effect=fake_fleet_command):
+            main_mod.main()
+
+        assert called == {
+            "command": "fleet",
+            "fleet_command": "orch",
+            "orch_command": "status",
+        }
+
     def test_main_dispatches_fleet_spawn_with_arguments(self):
         called = {}
 
@@ -97,4 +115,24 @@ class TestFleetCliWiring:
             "role": "planner",
             "profile": "frontier-opus",
             "cwd": "/tmp/project",
+        }
+
+    def test_main_dispatches_fleet_delegate_with_arguments(self):
+        called = {}
+
+        def fake_fleet_command(args):
+            called["fleet_command"] = args.fleet_command
+            called["task"] = args.task
+            called["role"] = args.role
+            called["profile"] = args.profile
+
+        argv = ["hermes", "fleet", "delegate", "--task", "Implement queue worker", "--role", "coder", "--profile", "local-mac-qwen"]
+        with patch.object(sys, "argv", argv), patch("hermes_cli.fleet.fleet_command", side_effect=fake_fleet_command):
+            main_mod.main()
+
+        assert called == {
+            "fleet_command": "delegate",
+            "task": "Implement queue worker",
+            "role": "coder",
+            "profile": "local-mac-qwen",
         }
